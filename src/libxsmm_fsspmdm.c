@@ -179,6 +179,10 @@ LIBXSMM_API libxsmm_dfsspmdm* libxsmm_dfsspmdm_create(
     }
   }
 
+  /* get n_blocking from env */
+  int n_blocking = getenv("N_BLOCKING") ? atof(getenv("N_BLOCKING")) : 1;
+  printf("n_blocking = %d\n", n_blocking);
+
   /* Attempt to JIT the unlimited-A-size sparse kernel */
   N_sparse1 = libxsmm_cpuid_vlen32(libxsmm_cpuid()) / 2;
   xgemm_desc = libxsmm_dgemm_descriptor_init(&xgemm_blob, M, N_sparse1, K,
