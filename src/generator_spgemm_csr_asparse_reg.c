@@ -86,7 +86,7 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
 
   unsigned int l_m_blocking = getenv("M_BLOCKING") ? atof(getenv("M_BLOCKING")) : 1;
   printf("l_m_blocking = %u\n", l_m_blocking);
-  
+
   /* Check that the arch is supported */
   if ( strcmp(i_arch, "knl") == 0 ) {
     io_generated_code->arch = LIBXSMM_X86_AVX512_MIC;
@@ -115,7 +115,7 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
   if ( i_xgemm_desc->n == l_micro_kernel_config.vector_length ) {
     l_n_blocking = 1;
   } else if ( i_xgemm_desc->n == 2*l_micro_kernel_config.vector_length ) {
-    l_n_blocking = 2; 
+    l_n_blocking = 2;
   } else if ( i_xgemm_desc->n == 3*l_micro_kernel_config.vector_length ) {
     l_n_blocking = 3;
   } else {
