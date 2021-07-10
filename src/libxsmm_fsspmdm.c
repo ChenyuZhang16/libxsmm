@@ -154,7 +154,32 @@ LIBXSMM_API libxsmm_dfsspmdm* libxsmm_dfsspmdm_create(
   }
   a_csr_rowptr[M] = a_nnz;
 
-  /* Attempt to JIT a sparse kernel */
+  /* Let's figure out how many unique values we have */
+  unsigned int a_unique;
+  double* const a_unique_values = (double*)(0 != a_nnz ? malloc(sizeof(double) * a_nnz) : NULL);
+  assert(a_unique_values);
+
+  a_unique = 1;
+  a_unique_values[0] = fabs(a_csr_values[0]);
+
+  for (n = 1; n < a_nnz; n++) {
+    unsigned int l_hit = 0;
+    /* search for the value */
+    for (i = 0; i < a_unique; i++) {
+      if (!(a_unique_values[i] < fabs(a_csr_values[n])) &&
+          !(a_unique_values[i] > fabs(a_csr_values[n]))) /*a_unique_values[i] == a_csr_values[n]*/ {
+        l_hit = 1;
+        break;
+      }
+    }
+    /* value was not found */
+    if (l_hit == 0) {
+      a_unique_values[a_unique] = fabs(a_csr_values[n]);
+      a_unique++;
+    }
+  }
+
+  /* Attempt to JIT the unlimited-A-size sparse kernel */
   N_sparse1 = libxsmm_cpuid_vlen32(libxsmm_cpuid()) / 2;
   xgemm_desc = libxsmm_dgemm_descriptor_init(&xgemm_blob, M, N_sparse1, K,
                                              0, ldb, ldc, one, beta, flags, prefetch);
@@ -162,128 +187,19 @@ LIBXSMM_API libxsmm_dfsspmdm* libxsmm_dfsspmdm_create(
     k_sparse1 = libxsmm_create_dcsr_reg(xgemm_desc, a_csr_rowptr, a_csr_colidx, a_csr_values);
   }
 
-  /* If that worked try to JIT a second (wider) sparse kernel */
-  N_sparse2 = N_sparse1*2;
-  if ( NULL != k_sparse1 && N_sparse2 <= N ) {
-    xgemm_desc = libxsmm_dgemm_descriptor_init(&xgemm_blob, M, N_sparse2, K,
-                                               0, ldb, ldc, one, beta, flags, prefetch);
-
-    if ( NULL != xgemm_desc ) {
-        k_sparse2 = libxsmm_create_dcsr_reg(xgemm_desc, a_csr_rowptr, a_csr_colidx, a_csr_values);
-    }
-  }
-
   /* Free CSR */
   free( a_csr_values );
   free( a_csr_rowptr );
   free( a_csr_colidx );
 
-  /* Also generate a dense kernel */
-  N_dense = 8;
-  k_dense = libxsmm_dmmdispatch(N_dense, M, K, &ldb, &K, &ldc, &one, &beta, &flags, (const int*)LIBXSMM_GEMM_PREFETCH_NONE);
-
-  if ( NULL != k_dense ) {
-    /* copy A over */
-    for ( i = 0; i < M; ++i ) {
-      for ( j = 0; j < K; ++j ) {
-        aa_dense[i*K + j] = alpha*a_dense[i*lda + j];
-      }
-    }
-  }
-
-  /* Tally up how many kernels we got */
-  nkerns = !!k_dense + !!k_sparse1 + !!k_sparse2;
-
-  /* We have at least one kernel */
-  if ( nkerns ) {
-    libxsmm_timer_tickint t;
-    double *B = NULL, *C = NULL;
-    double dt_dense = ( NULL != k_dense ) ? 1e5 : 1e6;
-    double dt_sparse1 = ( NULL != k_sparse1 ) ? 1e5 : 1e6;
-    double dt_sparse2 = ( NULL != k_sparse2 ) ? 1e5 : 1e6;
-    void* fp;
-
-    /* If we have two or more kernels then try to benchmark them */
-    if ( nkerns >= 2 ) {
-      B = (double*)libxsmm_aligned_malloc((size_t)K * (size_t)ldb * sizeof(double), 64);
-      C = (double*)libxsmm_aligned_malloc((size_t)M * (size_t)ldc * sizeof(double), 64);
-
-      if ( NULL != B && NULL != C ) {
-        for ( i = 0; i < K; i++ ) {
-          for ( j = 0; j < N; j++ ) {
-            B[i*ldb + j] = 1;
-          }
-        }
-        for ( i = 0; i < M; i++ ) {
-          for ( j = 0; j < N; j++ ) {
-            C[i*ldc + j] = 1;
-          }
-        }
-      }
-    }
-
-    /* Benchmark dense */
-    if ( NULL != k_dense && NULL != B && NULL != C ) {
-      t = libxsmm_timer_tick();
-      for ( i = 0; i < 250; i++ ) {
-        for ( j = 0; j < N; j += N_dense ) {
-          k_dense( B + j, aa_dense, C + j );
-        }
-      }
-      dt_dense = libxsmm_timer_duration( t, libxsmm_timer_tick() );
-    }
-
-    /* Benchmark sparse (regular) */
-    if ( NULL != k_sparse1 && NULL != B && NULL != C ) {
-      t = libxsmm_timer_tick();
-      for ( i = 0; i < 250; i++ ) {
-        for ( j = 0; j < N; j += N_sparse1 ) {
-          k_sparse1( internal_fsspmdm_dperm, B + j, C + j );
-        }
-      }
-      dt_sparse1 = libxsmm_timer_duration( t, libxsmm_timer_tick() );
-    }
-
-    /* Benchmark sparse (wide) */
-    if ( NULL != k_sparse2 && NULL != B && NULL != C ) {
-      t = libxsmm_timer_tick();
-      for ( i = 0; i < 250; i++ ) {
-        for ( j = 0; j < N; j += N_sparse2 ) {
-          k_sparse2( internal_fsspmdm_dperm, B + j, C + j );
-        }
-      }
-      dt_sparse2 = libxsmm_timer_duration( t, libxsmm_timer_tick() );
-    }
-
-    /* Dense fastest */
-    if ( dt_dense <= dt_sparse1 && dt_dense <= dt_sparse2 ) {
-      new_handle->N_chunksize = N_dense;
-      new_handle->kernel = k_dense;
-      new_handle->a_dense = aa_dense;
-    } else {
-      libxsmm_free( aa_dense );
-    }
-
+  /* We have the unlimited-A-size sparse kernel */
+  if ( k_sparse1 ) {
     /* Sparse (regular) fastest */
-    if ( dt_sparse1 < dt_dense && dt_sparse1 <= dt_sparse2 ) {
-      new_handle->N_chunksize = N_sparse1;
-      new_handle->kernel = k_sparse1;
-    } else if ( NULL != k_sparse1 ) {
-      LIBXSMM_ASSIGN127( &fp, &k_sparse1 );
-      libxsmm_free( fp );
-    }
+    new_handle->N_chunksize = N_sparse1;
+    new_handle->kernel = k_sparse1;
+    new_handle->a_dense = a_unique_values;
+    libxsmm_free( aa_dense );
 
-    /* Sparse (wide) fastest */
-    if ( dt_sparse2 < dt_dense && dt_sparse2 < dt_sparse1 ) {
-      new_handle->N_chunksize = N_sparse2;
-      new_handle->kernel = k_sparse2;
-    } else if ( NULL != k_sparse2 ) {
-      LIBXSMM_ASSIGN127( &fp, &k_sparse2 );
-      libxsmm_free( fp );
-    }
-
-    libxsmm_free( B );
-    libxsmm_free( C );
   }
   else {
     libxsmm_free( aa_dense );
@@ -538,7 +454,7 @@ LIBXSMM_API void libxsmm_dfsspmdm_execute( const libxsmm_dfsspmdm* handle, const
     }
   } else {
     for ( i = 0; i < handle->N; i+=handle->N_chunksize ) {
-      handle->kernel( B+i, handle->a_dense, C+i );
+      handle->kernel( handle->a_dense, B+i, C+i );
     }
   }
 }

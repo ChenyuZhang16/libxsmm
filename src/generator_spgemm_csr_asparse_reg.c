@@ -171,11 +171,13 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
   }
 
   /* check that there are not too many unique values */
+  /*
   if ( l_unique > l_breg_unique && l_unique > l_preg_unique && l_unique > l_psreg_unique ) {
     free(l_unique_values); free(l_unique_pos); free(l_unique_sgn);
     LIBXSMM_HANDLE_ERROR( io_generated_code, LIBXSMM_ERR_UNIQUE_VAL );
     return;
   }
+  */
 
   /* define gp register mapping */
   libxsmm_reset_x86_gp_reg_mapping( &l_gp_reg_mapping );
@@ -210,100 +212,6 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
 
   /* open asm */
   libxsmm_x86_instruction_open_stream( io_generated_code, &l_gp_reg_mapping, i_xgemm_desc->prefetch );
-
-  /*
-   * load A into registers
-   * pre-broadcast if possible, otherwise load for run-time broadcasting
-   */
-  if (l_unique <= l_breg_unique ) {
-    /* pre-broadcast A values into registers */
-    for ( l_z = 0; l_z < l_unique; l_z++) {
-      char l_id[65];
-      LIBXSMM_SNPRINTF(l_id, 64, "%u", l_z);
-      if ( LIBXSMM_GEMM_PRECISION_F64 == LIBXSMM_GETENUM_INP( i_xgemm_desc->datatype )  ) {
-        for ( l_m = 0; l_m < 8; l_m++) {
-          l_code_const_dp[l_m] = l_unique_values[l_z];
-        }
-        libxsmm_x86_instruction_full_vec_load_of_constants ( io_generated_code,
-                                                            (unsigned char*)l_code_const_dp,
-                                                            l_id,
-                                                            l_micro_kernel_config.vector_name,
-                                                            l_z );
-      } else {
-        for ( l_m = 0; l_m < 16; l_m++) {
-          l_code_const_fp[l_m] = (float)l_unique_values[l_z];
-        }
-        libxsmm_x86_instruction_full_vec_load_of_constants ( io_generated_code,
-                                                            (unsigned char*)l_code_const_fp,
-                                                            l_id,
-                                                            l_micro_kernel_config.vector_name,
-                                                            l_z );
-      }
-    }
-  } else {
-    /* load packed A into registers */
-    l_z = 0;
-    l_reg_num = 0;
-    while (l_z < l_unique) {
-      char l_id[65];
-      LIBXSMM_SNPRINTF(l_id, 64, "%u", l_reg_num);
-      l_m = 0;
-
-      if ( l_fp64 ) {
-        while (l_z < l_unique && l_m < 8) {
-          l_code_const_dp[l_m++] = l_unique_values[l_z++];
-        }
-        libxsmm_x86_instruction_full_vec_load_of_constants( io_generated_code,
-                                                            (unsigned char*)l_code_const_dp,
-                                                            l_id,
-                                                            l_micro_kernel_config.vector_name,
-                                                            l_reg_num++ );
-      } else {
-        while (l_z < l_unique && l_m < 16) {
-          l_code_const_fp[l_m++] = (float)l_unique_values[l_z++];
-        }
-        libxsmm_x86_instruction_full_vec_load_of_constants( io_generated_code,
-                                                            (unsigned char*)l_code_const_fp,
-                                                            l_id,
-                                                            l_micro_kernel_config.vector_name,
-                                                            l_reg_num++ );
-      }
-    }
-
-    /* load permute operands into registers if space is available (otherwise they are read from memory) */
-    if ( l_fp64 && l_unique <= l_preg_unique ) {
-      for (l_reg_num = l_base_perm_reg; l_reg_num < l_base_perm_reg + 8; l_reg_num++ ) {
-        char l_id[65];
-        LIBXSMM_SNPRINTF(l_id, 64, "%u", l_reg_num);
-        l_m = 0;
-        /* repeat pattern to select 64-bits using vpermd */
-        while (l_m < 16) {
-            l_const_perm_ops[l_m++] = (l_reg_num - l_base_perm_reg)*2;
-            l_const_perm_ops[l_m++] = (l_reg_num - l_base_perm_reg)*2 + 1;
-        }
-        libxsmm_x86_instruction_full_vec_load_of_constants( io_generated_code,
-                                                            (unsigned char*)l_const_perm_ops,
-                                                            l_id,
-                                                            l_micro_kernel_config.vector_name,
-                                                            l_reg_num );
-      }
-    } else if ( !l_fp64 && l_unique <= l_preg_unique ) {
-      for (l_reg_num = l_base_perm_reg; l_reg_num<l_base_perm_reg + 16; l_reg_num++ ) {
-        char l_id[65];
-        LIBXSMM_SNPRINTF(l_id, 64, "%u", l_reg_num);
-        l_m = 0;
-        /* repeat pattern to select 32-bits using vpermd */
-        while (l_m < 16) {
-            l_const_perm_ops[l_m++] = (l_reg_num - l_base_perm_reg);
-        }
-        libxsmm_x86_instruction_full_vec_load_of_constants( io_generated_code,
-                                                            (unsigned char*)l_const_perm_ops,
-                                                            l_id,
-                                                            l_micro_kernel_config.vector_name,
-                                                            l_reg_num );
-      }
-    }
-  }
 
   /* n loop */
 #if 0
@@ -360,74 +268,26 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
         fma_instruction = (l_unique_sgn[u] == 1) ? LIBXSMM_X86_INSTR_VFMADD231PS : LIBXSMM_X86_INSTR_VFNMADD231PS;
       }
 
-      /* broadcast unique element of A if not in pre-broadcast mode */
-      if (l_unique > l_breg_unique ) {
-        if ( l_fp64 ) {
-          /* load permute selector operand if not stored in registers */
-          if ( l_unique > l_preg_unique ) {
-            libxsmm_x86_instruction_vec_move( io_generated_code,
-                                              l_micro_kernel_config.instruction_set,
-                                              l_micro_kernel_config.a_vmove_instruction,
-                                              l_gp_reg_mapping.gp_reg_a,
-                                              LIBXSMM_X86_GP_REG_UNDEF, 0,
-                                              (l_unique_pos[u] % 8)*64,
-                                              l_micro_kernel_config.vector_name,
-                                              l_bcast_reg, 0, 1, 0 );
+      /* runtime broadcast A constant from memory */
+      l_unique_reg = 0;
 
-            libxsmm_x86_instruction_vec_compute_reg(io_generated_code,
-                                                    l_micro_kernel_config.instruction_set,
-                                                    LIBXSMM_X86_INSTR_VPERMD,
-                                                    l_micro_kernel_config.vector_name,
-                                                    l_unique_pos[u] / 8,
-                                                    l_bcast_reg,
-                                                    l_bcast_reg);
+      libxsmm_x86_instruction_vec_move(io_generated_code,
+                                       l_micro_kernel_config.instruction_set,
+                                       LIBXSMM_X86_INSTR_VBROADCASTSD,
+                                       l_gp_reg_mapping.gp_reg_a,
+                                       LIBXSMM_X86_GP_REG_UNDEF,
+                                       0,
+                                       l_unique_pos[u]*l_micro_kernel_config.datatype_size_in,
+                                       l_micro_kernel_config.vector_name,
+                                       l_unique_reg,
+                                       0,
+                                       0,
+                                       0);
 
-          /* permute selector operand already in register */
-          } else {
-            libxsmm_x86_instruction_vec_compute_reg(io_generated_code,
-                                                    l_micro_kernel_config.instruction_set,
-                                                    LIBXSMM_X86_INSTR_VPERMD,
-                                                    l_micro_kernel_config.vector_name,
-                                                    l_unique_pos[u] / 8,
-                                                    l_base_perm_reg + l_unique_pos[u] % 8,
-                                                    l_bcast_reg);
-          }
-        } else {
-          /* load permute selector operand if not stored in registers */
-          if ( l_unique > l_preg_unique ) {
-            libxsmm_x86_instruction_vec_move( io_generated_code,
-                                              l_micro_kernel_config.instruction_set,
-                                              l_micro_kernel_config.a_vmove_instruction,
-                                              l_gp_reg_mapping.gp_reg_a,
-                                              LIBXSMM_X86_GP_REG_UNDEF, 0,
-                                              (l_unique_pos[u] % 16)*64,
-                                              l_micro_kernel_config.vector_name,
-                                              l_bcast_reg, 0, 1, 0 );
-
-            libxsmm_x86_instruction_vec_compute_reg(io_generated_code,
-                                                    l_micro_kernel_config.instruction_set,
-                                                    LIBXSMM_X86_INSTR_VPERMD,
-                                                    l_micro_kernel_config.vector_name,
-                                                    l_unique_pos[u] / 16,
-                                                    l_bcast_reg,
-                                                    l_bcast_reg);
-
-          /* permute selector operand already in register */
-          } else {
-            libxsmm_x86_instruction_vec_compute_reg(io_generated_code,
-                                                    l_micro_kernel_config.instruction_set,
-                                                    LIBXSMM_X86_INSTR_VPERMD,
-                                                    l_micro_kernel_config.vector_name,
-                                                    l_unique_pos[u] / 16,
-                                                    l_base_perm_reg + l_unique_pos[u] % 16,
-                                                    l_bcast_reg);
-          }
-        }
-      }
 
       for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
         /* select correct register depending on mode */
-        l_unique_reg = l_unique > 31 ? l_bcast_reg : l_unique_pos[u];
+        /* l_unique_reg = l_unique > 31 ? l_bcast_reg : l_unique_pos[u]; */
 
         libxsmm_x86_instruction_vec_compute_mem( io_generated_code,
                                                  l_micro_kernel_config.instruction_set,
