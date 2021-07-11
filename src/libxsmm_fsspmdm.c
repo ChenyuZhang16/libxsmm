@@ -185,6 +185,7 @@ LIBXSMM_API libxsmm_dfsspmdm* libxsmm_dfsspmdm_create(
 
   /* Attempt to JIT the unlimited-A-size sparse kernel */
   N_sparse1 = libxsmm_cpuid_vlen32(libxsmm_cpuid()) / 2;
+  N_sparse1 = N_sparse1 * n_blocking;
   xgemm_desc = libxsmm_dgemm_descriptor_init(&xgemm_blob, M, N_sparse1, K,
                                              0, ldb, ldc, one, beta, flags, prefetch);
   if ( NULL != xgemm_desc ) {
