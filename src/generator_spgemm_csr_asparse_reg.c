@@ -124,7 +124,7 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
       return;
   }
 
-  assert(l_m_blocking + l_m_blocking * l_n_blocking <= 32);
+  assert(l_n_blocking + l_m_blocking * l_n_blocking <= 32);
 
   /* Init config */
   if ( io_generated_code->arch == LIBXSMM_X86_AVX2 ) {
@@ -219,7 +219,6 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
       index_array[m_row] = i_row_idx[l_m + m_row];
     }
 
-    /* load C or reset to 0 depending on beta */
     for (m_row = 0; m_row < num_m_block_rows; m_row++) {
       unsigned int current_row = l_m + m_row;
 
@@ -249,7 +248,7 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
                                                     register_number );
           }
 
-          /* ignoreing prefetch for now */
+          /* ignoring prefetch for now */
 
         }
       }
@@ -257,6 +256,9 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
 
     unsigned int m_col;
     for (m_col = 0; m_col < (unsigned int)i_xgemm_desc->k; m_col++) {
+
+      int has_hit = 0;
+
       for (m_row = 0; m_row < num_m_block_rows; m_row++) {
         unsigned int current_row = l_m + m_row;
 
@@ -280,9 +282,28 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
             fma_instruction = (l_unique_sgn[u] == 1) ? LIBXSMM_X86_INSTR_VFMADD231PS : LIBXSMM_X86_INSTR_VFNMADD231PS;
           }
 
-          /* runtime broadcast A constant from memory */
-          l_unique_reg = m_row;
+          /* load B stride from memory if required */
+          if (!has_hit) {
+            for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
+              libxsmm_x86_instruction_vec_move(io_generated_code,
+                                               l_micro_kernel_config.instruction_set,
+                                               LIBXSMM_X86_INSTR_VMOVUPD_LD,
+                                               l_gp_reg_mapping.gp_reg_b,
+                                               LIBXSMM_X86_GP_REG_UNDEF,
+                                               0,
+                                               i_column_idx[u]*i_xgemm_desc->ldb*l_micro_kernel_config.datatype_size_in +
+                                                 l_n*l_micro_kernel_config.datatype_size_in*l_micro_kernel_config.vector_length,
+                                               l_micro_kernel_config.vector_name,
+                                               l_n,
+                                               0,
+                                               0,
+                                               0);
+            }
 
+            has_hit = 1;
+          }
+
+          /*
           libxsmm_x86_instruction_vec_move(io_generated_code,
                                            l_micro_kernel_config.instruction_set,
                                            LIBXSMM_X86_INSTR_VBROADCASTSD,
@@ -295,8 +316,24 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
                                            0,
                                            0,
                                            0);
+          */
 
           /* FMA */
+          for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
+            libxsmm_x86_instruction_vec_compute_mem(io_generated_code,
+            l_micro_kernel_config.instruction_set,
+            fma_instruction,
+            1,
+            l_gp_reg_mapping.gp_reg_a,
+            LIBXSMM_X86_GP_REG_UNDEF,
+            0,
+            l_unique_pos[u]*l_micro_kernel_config.datatype_size_in,
+            l_micro_kernel_config.vector_name,
+            l_unique_reg + l_n,
+            l_base_acc_reg + m_row*l_n_blocking  + l_n );
+          }
+
+          /*
           for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
             libxsmm_x86_instruction_vec_compute_mem(io_generated_code,
                                                     l_micro_kernel_config.instruction_set,
@@ -321,6 +358,7 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
                                                   (l_n+1)*l_micro_kernel_config.datatype_size_in*l_micro_kernel_config.vector_length );
             }
           }
+          */
 
           /* increment row element index */
           index_array[m_row]++;
