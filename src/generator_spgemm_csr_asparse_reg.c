@@ -371,6 +371,7 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
     }
 
     /* Store the values */
+    /* skip the storing
     for (m_row = 0; m_row < num_m_block_rows; m_row++) {
 
       unsigned int current_row = l_m + m_row;
@@ -401,6 +402,7 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
 
       }
     }
+    */
 
   }
 
