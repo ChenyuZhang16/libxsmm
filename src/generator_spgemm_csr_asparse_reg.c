@@ -285,6 +285,7 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
           /* load B stride from memory if required */
           if (!has_hit) {
             for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
+              /* ignoreing B load
               libxsmm_x86_instruction_vec_move(io_generated_code,
                                                l_micro_kernel_config.instruction_set,
                                                LIBXSMM_X86_INSTR_VMOVUPD_LD,
@@ -298,6 +299,7 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
                                                0,
                                                0,
                                                0);
+                                               */
             }
 
             has_hit = 1;
