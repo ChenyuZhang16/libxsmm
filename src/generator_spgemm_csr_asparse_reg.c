@@ -272,7 +272,7 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
         } else if (m_col == col_num) {
           /* hit! need to FMA */
           const unsigned int u = index_array[m_row];
-          unsigned int l_unique_reg, fma_instruction;
+          unsigned int l_unique_reg = 0, fma_instruction;
           LIBXSMM_ASSERT(u < l_n_row_idx);
 
           /* select the correct FMA instruction */
