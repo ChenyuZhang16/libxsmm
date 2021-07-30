@@ -204,7 +204,13 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
   libxsmm_x86_instruction_open_stream( io_generated_code, &l_gp_reg_mapping, i_xgemm_desc->prefetch );
 
   /* n loop */
-
+  libxsmm_x86_instruction_vec_compute_reg(io_generated_code,
+                                          l_micro_kernel_config.instruction_set,
+                                          l_micro_kernel_config.vxor_instruction,
+                                          l_micro_kernel_config.vector_name,
+                                          0,
+                                          0,
+                                          0 );
 
   for ( l_m = 0; l_m < (unsigned int)i_xgemm_desc->m; l_m += l_m_blocking ) {
 
