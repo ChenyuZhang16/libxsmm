@@ -46,6 +46,17 @@ void libxsmm_mmfunction_signature_asparse_reg( libxsmm_generated_code*        io
 }
 
 LIBXSMM_API_INTERN
+void print_u_array(unsigned int const* arr, unsigned int width, unsigned int height) {
+  unsigned int w, h;
+  for (h = 0; h < height; h++) {
+    for (w = 0; w < width; w++) {
+      printf("%3u", arr[h*width + w]);
+    }
+    printf("\n");
+  }
+}
+
+LIBXSMM_API_INTERN
 void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         io_generated_code,
                                                const libxsmm_gemm_descriptor*  i_xgemm_desc,
                                                const char*                     i_arch,
@@ -54,6 +65,7 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
                                                const double*                   i_values ) {
   unsigned int l_m;
   unsigned int l_n;
+  unsigned int l_k;
   unsigned int l_z;
   unsigned int l_row_elements;
   unsigned int l_unique;
@@ -85,7 +97,13 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
   }
 
   unsigned int l_m_blocking = getenv("M_BLOCKING") ? atof(getenv("M_BLOCKING")) : 1;
+  unsigned int l_k_blocking = getenv("K_BLOCKING") ? atof(getenv("K_BLOCKING")) : 0;
+
   printf("l_m_blocking = %u\n", l_m_blocking);
+  printf("l_k_blocking = %u\n", l_k_blocking);
+
+  if ( !l_k_blocking )
+    l_k_blocking = (unsigned int)i_xgemm_desc->k;
 
   /* Check that the arch is supported */
   if ( strcmp(i_arch, "knl") == 0 ) {
@@ -123,6 +141,10 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
       LIBXSMM_HANDLE_ERROR( io_generated_code, LIBXSMM_ERR_N_BLOCK );
       return;
   }
+
+  fprintf(stderr, "l_n_blocking = %u\n", l_n_blocking);
+  fprintf(stderr, "l_m_blocking = %u\n", l_m_blocking);
+  fprintf(stderr, "l_k_blocking = %u\n", l_k_blocking);
 
   assert(2*l_n_blocking + l_m_blocking * l_n_blocking <= 32);
 
@@ -204,211 +226,235 @@ void libxsmm_generator_spgemm_csr_asparse_reg( libxsmm_generated_code*         i
   libxsmm_x86_instruction_open_stream( io_generated_code, &l_gp_reg_mapping, i_xgemm_desc->prefetch );
 
   /* n loop */
+  unsigned int* load_history_array_row = (unsigned int*) calloc((size_t) i_xgemm_desc->m, sizeof(unsigned int));
 
+  for ( l_k = 0; l_k < (unsigned int)i_xgemm_desc->k; l_k += l_k_blocking ) {
 
-  for ( l_m = 0; l_m < (unsigned int)i_xgemm_desc->m; l_m += l_m_blocking ) {
+    /* calculate number cols in this k block*/
+    unsigned int num_k_block_cols = ((unsigned int)i_xgemm_desc->k - l_k) < l_k_blocking ? ((unsigned int)i_xgemm_desc->k - l_k) : l_k_blocking;
+    unsigned int final_k_block = ((unsigned int)i_xgemm_desc->k - l_k) <= l_k_blocking ? 1 : 0;
 
-    /* calculate number rows in this block*/
-    unsigned int num_m_block_rows = ((unsigned int)i_xgemm_desc->m - l_m) < l_m_blocking ? ((unsigned int)i_xgemm_desc->m - l_m) : l_m_blocking;
+    for ( l_m = 0; l_m < (unsigned int)i_xgemm_desc->m; l_m += l_m_blocking ) {
 
-    /* generate an array holding the column number of the current targeting number of each row */
-    unsigned int* index_array = (unsigned int*) calloc((size_t) num_m_block_rows, sizeof(unsigned int));
+      /* calculate number rows in this block*/
+      unsigned int num_m_block_rows = ((unsigned int)i_xgemm_desc->m - l_m) < l_m_blocking ? ((unsigned int)i_xgemm_desc->m - l_m) : l_m_blocking;
 
-    unsigned int m_row;
-    for (m_row = 0; m_row < num_m_block_rows; m_row++) {
-      index_array[m_row] = i_row_idx[l_m + m_row];
-    }
+      /* generate an array holding the column number of the current targeting number of each row */
+      unsigned int* index_array = (unsigned int*) calloc((size_t) num_m_block_rows, sizeof(unsigned int));
 
-    /* generate an M_BLOCKING-by-2 array holding a short history of the location of non-zeros */
-    unsigned int* history_array = (unsigned int*) calloc((size_t) 2 * num_m_block_rows, sizeof(unsigned int));
-
-    /* generate an array holding if there is a non-zero element in the history_array */
-    unsigned int hit_array[2] = {0, 0};
-
-    /* current register */
-    unsigned int current_register = 0;
-
-    unsigned int m_col;
-
-    unsigned int first_block = 1;
-
-    for (m_col = 0; m_col < (unsigned int)i_xgemm_desc->k; m_col++) {
-
+      unsigned int m_row;
       for (m_row = 0; m_row < num_m_block_rows; m_row++) {
-        unsigned int current_row = l_m + m_row;
-        unsigned int col_num = i_column_idx[index_array[m_row]];
+        index_array[m_row] = i_row_idx[l_m + m_row];
+      }
 
-        if (index_array[m_row] >= i_row_idx[current_row + 1] /* no more non-zero element in this row */ ||
-            m_col < col_num /* not reaching a non-zero element of this row yet */) {
-          history_array[2 * m_row + current_register] = 0;
-        }
-        else if (m_col == col_num) {
-          history_array[2 * m_row + current_register] = index_array[m_row] + 1;
-          hit_array[current_register] = 1;
+      /* generate an M_BLOCKING-by-K_BLOCKING array holding a short history of the location of non-zeros */
+      unsigned int* history_array = (unsigned int*) calloc((size_t) (num_k_block_cols * num_m_block_rows), sizeof(unsigned int));
 
-          /* increment row element index */
-          index_array[m_row]++;
-        }
-        else {
-          /* Something went wrong */
-          printf("Something went wrong");
-          assert(0);
+      /* generate an array holding if there is a non-zero element in the rows/cols of the history_array */
+      unsigned int* hit_array_col_block = (unsigned int*) calloc((size_t) num_k_block_cols, sizeof(unsigned int));
+      unsigned int* hit_array_row_block = (unsigned int*) calloc((size_t) num_m_block_rows, sizeof(unsigned int));
+
+      /* current register */
+      unsigned int current_register = 0;
+
+      unsigned int m_col, k_col;
+
+      unsigned int first_m_block = 1;
+
+      for (k_col = 0; k_col < num_k_block_cols; k_col++) {
+
+        m_col = l_k + k_col;
+
+        for (m_row = 0; m_row < num_m_block_rows; m_row++) {
+
+          unsigned int current_row = l_m + m_row;
+          unsigned int col_num = i_column_idx[index_array[m_row]];
+
+          if (index_array[m_row] >= i_row_idx[current_row + 1] /* no more non-zero element in this row */ ||
+              m_col < col_num /* not reaching a non-zero element of this row yet */) {
+            history_array[num_k_block_cols * m_row + k_col] = 0;
+          }
+          else if (m_col == col_num) {
+            history_array[num_k_block_cols * m_row + k_col] = index_array[m_row] + 1;
+            hit_array_col_block[k_col] = 1;
+            hit_array_row_block[m_row] = 1;
+
+            /* increment row element index */
+            index_array[m_row]++;
+          }
+          else if (m_col > col_num) {
+            /* increment row element index */
+            index_array[m_row]++;
+            m_row--;
+          }
+          else {
+            /* Something went wrong */
+            printf("Something went wrong");
+            assert(0);
+          }
         }
       }
 
-      /* issue FMAs if required */
-      if (hit_array[current_register]) {
+      for (k_col = 0; k_col < num_k_block_cols; k_col++) {
 
-        /* load current(m_col) b strides into current register */
-        for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
-          libxsmm_x86_instruction_vec_move(io_generated_code,
-                                           l_micro_kernel_config.instruction_set,
-                                           LIBXSMM_X86_INSTR_VMOVUPD_LD,
-                                           l_gp_reg_mapping.gp_reg_b,
-                                           LIBXSMM_X86_GP_REG_UNDEF,
-                                           0,
-                                           m_col*i_xgemm_desc->ldb*l_micro_kernel_config.datatype_size_in +
-                                             l_n*l_micro_kernel_config.datatype_size_in*l_micro_kernel_config.vector_length,
-                                           l_micro_kernel_config.vector_name,
-                                           2*l_n + current_register,
-                                           0,
-                                           0,
-                                           0);
-        }
+        if (hit_array_col_block[k_col]) { /* there are non-zeros on this col */
+          m_col = l_k + k_col;
 
-        if ( first_block ) {
-          /* First block, need to load C or zero C registiers */
-          for (m_row = 0; m_row < num_m_block_rows; m_row++) {
+          /* load current (m_col) b strides into current register */
+          for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
+            libxsmm_x86_instruction_vec_move(io_generated_code,
+                                            l_micro_kernel_config.instruction_set,
+                                            LIBXSMM_X86_INSTR_VMOVUPD_LD,
+                                            l_gp_reg_mapping.gp_reg_b,
+                                            LIBXSMM_X86_GP_REG_UNDEF,
+                                            0,
+                                            m_col*i_xgemm_desc->ldb*l_micro_kernel_config.datatype_size_in +
+                                              l_n*l_micro_kernel_config.datatype_size_in*l_micro_kernel_config.vector_length,
+                                            l_micro_kernel_config.vector_name,
+                                            2*l_n + current_register,
+                                            0,
+                                            0,
+                                            0);
+          }
 
-            unsigned int current_row = l_m + m_row;
-            l_row_elements = i_row_idx[current_row + 1] - i_row_idx[current_row];
+          if (first_m_block) {
+            /* First block, need to load C or zero C registiers */
+            for (m_row = 0; m_row < num_m_block_rows; m_row++) {
 
-            if (l_row_elements > 0) {
-              for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
-                unsigned int register_number = l_base_acc_reg + m_row * l_n_blocking + l_n;
+              if (hit_array_row_block[m_row]) { /* there are non-zeros on this row */
+                unsigned int current_row = l_m + m_row;
 
-                if ( 0 == (LIBXSMM_GEMM_FLAG_BETA_0 & i_xgemm_desc->flags) ) { /* Beta=1 */
-                  libxsmm_x86_instruction_vec_move( io_generated_code,
-                                                    l_micro_kernel_config.instruction_set,
-                                                    l_micro_kernel_config.c_vmove_instruction,
-                                                    l_gp_reg_mapping.gp_reg_c,
-                                                    LIBXSMM_X86_GP_REG_UNDEF, 0,
-                                                    current_row*i_xgemm_desc->ldc*l_micro_kernel_config.datatype_size_out +
-                                                      l_n*l_micro_kernel_config.datatype_size_out*l_micro_kernel_config.vector_length,
-                                                    l_micro_kernel_config.vector_name,
-                                                    register_number, 0, 1, 0 );
+                for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
+                  unsigned int register_number = l_base_acc_reg + m_row * l_n_blocking + l_n;
+
+                  if (0 == (LIBXSMM_GEMM_FLAG_BETA_0 & i_xgemm_desc->flags) /* Beta=1 */ || load_history_array_row[current_row]) {
+                    libxsmm_x86_instruction_vec_move( io_generated_code,
+                                                      l_micro_kernel_config.instruction_set,
+                                                      l_micro_kernel_config.c_vmove_instruction,
+                                                      l_gp_reg_mapping.gp_reg_c,
+                                                      LIBXSMM_X86_GP_REG_UNDEF, 0,
+                                                      current_row*i_xgemm_desc->ldc*l_micro_kernel_config.datatype_size_out +
+                                                        l_n*l_micro_kernel_config.datatype_size_out*l_micro_kernel_config.vector_length,
+                                                      l_micro_kernel_config.vector_name,
+                                                      register_number, 0, 1, 0 );
+                  } else {
+                    libxsmm_x86_instruction_vec_compute_reg( io_generated_code,
+                                                             l_micro_kernel_config.instruction_set,
+                                                             l_micro_kernel_config.vxor_instruction,
+                                                             l_micro_kernel_config.vector_name,
+                                                             register_number,
+                                                             register_number,
+                                                             register_number );
+                  }
+                }
+                load_history_array_row[current_row] = 1;
+              }
+
+            }
+            first_m_block = 0;
+
+          } else {
+            /* FMA the with the previous b strides to hide memory latency */
+            unsigned int previous_register = 1 - current_register;
+
+            unsigned int previous_hit_col;
+            for (previous_hit_col = k_col - 1; !hit_array_col_block[previous_hit_col]; previous_hit_col--);
+
+            for (m_row = 0; m_row < num_m_block_rows; m_row++) {
+              if ( history_array[num_k_block_cols*m_row + previous_hit_col]) {
+                unsigned int fma_instruction;
+                const unsigned int u = history_array[num_k_block_cols * m_row + previous_hit_col] - 1;
+
+                if (l_fp64) {
+                  fma_instruction = (l_unique_sgn[u] == 1) ? LIBXSMM_X86_INSTR_VFMADD231PD : LIBXSMM_X86_INSTR_VFNMADD231PD;
                 } else {
-                  libxsmm_x86_instruction_vec_compute_reg( io_generated_code,
+                  fma_instruction = (l_unique_sgn[u] == 1) ? LIBXSMM_X86_INSTR_VFMADD231PS : LIBXSMM_X86_INSTR_VFNMADD231PS;
+                }
+
+                for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
+                  libxsmm_x86_instruction_vec_compute_mem(io_generated_code,
                                                           l_micro_kernel_config.instruction_set,
-                                                          l_micro_kernel_config.vxor_instruction,
+                                                          fma_instruction,
+                                                          1,
+                                                          l_gp_reg_mapping.gp_reg_a,
+                                                          LIBXSMM_X86_GP_REG_UNDEF,
+                                                          0,
+                                                          l_unique_pos[u]*l_micro_kernel_config.datatype_size_in,
                                                           l_micro_kernel_config.vector_name,
-                                                          register_number,
-                                                          register_number,
-                                                          register_number );
+                                                          2*l_n + previous_register,
+                                                          l_base_acc_reg + m_row*l_n_blocking  + l_n);
                 }
               }
             }
+
           }
 
-          first_block = 0;
-
-        } else {
-          /* FMA the with the previous b strides to hide memory latency */
-          unsigned int previous_register = 1 - current_register;
-
-          for (m_row = 0; m_row < num_m_block_rows; m_row++) {
-            if ( history_array[2 * m_row + previous_register] ) {
-              unsigned int fma_instruction;
-              const unsigned int u = history_array[2 * m_row + previous_register] - 1;
-
-              if (l_fp64) {
-                fma_instruction = (l_unique_sgn[u] == 1) ? LIBXSMM_X86_INSTR_VFMADD231PD : LIBXSMM_X86_INSTR_VFNMADD231PD;
-              } else {
-                fma_instruction = (l_unique_sgn[u] == 1) ? LIBXSMM_X86_INSTR_VFMADD231PS : LIBXSMM_X86_INSTR_VFNMADD231PS;
-              }
-
-              for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
-                libxsmm_x86_instruction_vec_compute_mem(io_generated_code,
-                                                        l_micro_kernel_config.instruction_set,
-                                                        fma_instruction,
-                                                        1,
-                                                        l_gp_reg_mapping.gp_reg_a,
-                                                        LIBXSMM_X86_GP_REG_UNDEF,
-                                                        0,
-                                                        l_unique_pos[u]*l_micro_kernel_config.datatype_size_in,
-                                                        l_micro_kernel_config.vector_name,
-                                                        2*l_n + previous_register,
-                                                        l_base_acc_reg + m_row*l_n_blocking  + l_n);
-              }
-            }
-          }
+          current_register = 1 - current_register;
         }
-        hit_array[current_register] = 0;
-        current_register = 1 - current_register;
       }
-    }
 
-    /* FMA the final block */
-    for (m_row = 0; m_row < num_m_block_rows; m_row++) {
+      /* FMA the final block */
+      unsigned int last_hit_k_col;
       unsigned int previous_register = 1 - current_register;
+      for (last_hit_k_col = num_k_block_cols - 1; !hit_array_col_block[last_hit_k_col] && last_hit_k_col; last_hit_k_col--);
 
-      if ( history_array[2 * m_row + previous_register] ) {
-        unsigned int fma_instruction;
-        const unsigned int u = history_array[2 * m_row + previous_register] - 1;
-
-        if (l_fp64) {
-          fma_instruction = (l_unique_sgn[u] == 1) ? LIBXSMM_X86_INSTR_VFMADD231PD : LIBXSMM_X86_INSTR_VFNMADD231PD;
-        } else {
-          fma_instruction = (l_unique_sgn[u] == 1) ? LIBXSMM_X86_INSTR_VFMADD231PS : LIBXSMM_X86_INSTR_VFNMADD231PS;
-        }
-
-        for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
-          libxsmm_x86_instruction_vec_compute_mem(io_generated_code,
-          l_micro_kernel_config.instruction_set,
-          fma_instruction,
-          1,
-          l_gp_reg_mapping.gp_reg_a,
-          LIBXSMM_X86_GP_REG_UNDEF,
-          0,
-          l_unique_pos[u]*l_micro_kernel_config.datatype_size_in,
-          l_micro_kernel_config.vector_name,
-          2*l_n + previous_register,
-          l_base_acc_reg + m_row*l_n_blocking  + l_n);
-        }
-      }
-    }
-
-    /* Store the values */
-    for (m_row = 0; m_row < num_m_block_rows; m_row++) {
-
-      unsigned int current_row = l_m + m_row;
-      l_row_elements = i_row_idx[current_row+1] - i_row_idx[current_row];
-
-      if (l_row_elements > 0) {
-        for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
-          unsigned int l_store_instruction = 0;
-          if ((LIBXSMM_GEMM_FLAG_ALIGN_C_NTS_HINT & i_xgemm_desc->flags) > 0) {
-            if ( l_fp64 ) {
-              l_store_instruction = LIBXSMM_X86_INSTR_VMOVNTPD;
-            } else {
-              l_store_instruction = LIBXSMM_X86_INSTR_VMOVNTPS;
-            }
+      for (m_row = 0; m_row < num_m_block_rows; m_row++) {
+        if (history_array[num_k_block_cols*m_row + last_hit_k_col]) {
+          unsigned int fma_instruction;
+          const unsigned int u = history_array[num_k_block_cols*m_row + last_hit_k_col] - 1;
+          if (l_fp64) {
+            fma_instruction = (l_unique_sgn[u] == 1) ? LIBXSMM_X86_INSTR_VFMADD231PD : LIBXSMM_X86_INSTR_VFNMADD231PD;
           } else {
-            l_store_instruction = l_micro_kernel_config.c_vmove_instruction;
+            fma_instruction = (l_unique_sgn[u] == 1) ? LIBXSMM_X86_INSTR_VFMADD231PS : LIBXSMM_X86_INSTR_VFNMADD231PS;
           }
-          libxsmm_x86_instruction_vec_move( io_generated_code,
-                                            l_micro_kernel_config.instruction_set,
-                                            l_store_instruction,
-                                            l_gp_reg_mapping.gp_reg_c,
-                                            LIBXSMM_X86_GP_REG_UNDEF, 0,
-                                            current_row*i_xgemm_desc->ldc*l_micro_kernel_config.datatype_size_out +
-                                              l_n*l_micro_kernel_config.datatype_size_out*l_micro_kernel_config.vector_length,
-                                            l_micro_kernel_config.vector_name,
-                                            l_base_acc_reg + m_row*l_n_blocking + l_n, 0, 0, 1 );
+
+          for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
+            libxsmm_x86_instruction_vec_compute_mem(io_generated_code,
+                                                    l_micro_kernel_config.instruction_set,
+                                                    fma_instruction,
+                                                    1,
+                                                    l_gp_reg_mapping.gp_reg_a,
+                                                    LIBXSMM_X86_GP_REG_UNDEF,
+                                                    0,
+                                                    l_unique_pos[u]*l_micro_kernel_config.datatype_size_in,
+                                                    l_micro_kernel_config.vector_name,
+                                                    2*l_n + previous_register,
+                                                    l_base_acc_reg + m_row*l_n_blocking  + l_n);
+          }
+        }
+      }
+
+
+      /* Store the values */
+      for (m_row = 0; m_row < num_m_block_rows; m_row++) {
+
+        unsigned int current_row = l_m + m_row;
+
+        if (hit_array_row_block[m_row]) {
+          for ( l_n = 0; l_n < l_n_blocking; l_n++ ) {
+            unsigned int l_store_instruction = 0;
+            if ((LIBXSMM_GEMM_FLAG_ALIGN_C_NTS_HINT & i_xgemm_desc->flags) > 0 && final_k_block) {
+              if ( l_fp64 ) {
+                l_store_instruction = LIBXSMM_X86_INSTR_VMOVNTPD;
+              } else {
+                l_store_instruction = LIBXSMM_X86_INSTR_VMOVNTPS;
+              }
+            } else {
+              l_store_instruction = l_micro_kernel_config.c_vmove_instruction;
+            }
+            libxsmm_x86_instruction_vec_move( io_generated_code,
+                                              l_micro_kernel_config.instruction_set,
+                                              l_store_instruction,
+                                              l_gp_reg_mapping.gp_reg_c,
+                                              LIBXSMM_X86_GP_REG_UNDEF, 0,
+                                              current_row*i_xgemm_desc->ldc*l_micro_kernel_config.datatype_size_out +
+                                                l_n*l_micro_kernel_config.datatype_size_out*l_micro_kernel_config.vector_length,
+                                              l_micro_kernel_config.vector_name,
+                                              l_base_acc_reg + m_row*l_n_blocking + l_n, 0, 0, 1 );
+          }
         }
       }
     }
-
   }
 
   /* close n loop */
