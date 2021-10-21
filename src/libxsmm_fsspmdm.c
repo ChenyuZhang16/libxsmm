@@ -98,7 +98,7 @@ LIBXSMM_API libxsmm_dfsspmdm* libxsmm_dfsspmdm_create(
   unsigned int a_unique_reg;
   int archid;
   int unlimited_unique;
-  const double* a_sparse;
+  const double* a_sparse = NULL;
 
   /* some checks */
   if (0 != (N % vlen)
@@ -377,34 +377,53 @@ LIBXSMM_API libxsmm_dfsspmdm* libxsmm_dfsspmdm_create(
       new_handle->kernel = k_dense;
       new_handle->a_dense = aa_dense;
       free(a_unique_values);
+
+      if (NULL != k_sparse1) {
+        LIBXSMM_ASSIGN127(&fp, &k_sparse1);
+        libxsmm_free(fp);
+      }
+
+      if (NULL != k_sparse2) {
+        LIBXSMM_ASSIGN127(&fp, &k_sparse2);
+        libxsmm_free(fp);
+      }
+
     } else {
+
       libxsmm_free( aa_dense );
-    }
 
-    /* Sparse (regular) fastest */
-    if ( dt_sparse1 < dt_dense && dt_sparse1 <= dt_sparse2 ) {
-      assert(NULL != k_sparse1);
-      new_handle->N_chunksize = N_sparse1;
-      new_handle->kernel = k_sparse1;
-      if (unlimited_unique) {
-        new_handle->a_packed = a_unique_values;
-      }
-    } else if ( NULL != k_sparse1 ) {
-      LIBXSMM_ASSIGN127( &fp, &k_sparse1 );
-      libxsmm_free( fp );
-    }
+      /* Sparse (regular) fastest */
+      if ( dt_sparse1 < dt_dense && dt_sparse1 <= dt_sparse2 ) {
+        assert(NULL != k_sparse1);
+        new_handle->N_chunksize = N_sparse1;
+        new_handle->kernel = k_sparse1;
+        if (unlimited_unique) {
+          new_handle->a_packed = a_unique_values;
+        } else {
+          free(a_unique_values);
+        }
 
-    /* Sparse (wide) fastest */
-    if ( dt_sparse2 < dt_dense && dt_sparse2 < dt_sparse1 ) {
-      assert(NULL != k_sparse2);
-      new_handle->N_chunksize = N_sparse2;
-      new_handle->kernel = k_sparse2;
-      if (unlimited_unique) {
-        new_handle->a_packed = a_unique_values;
+        if (NULL != k_sparse2) {
+          LIBXSMM_ASSIGN127(&fp, &k_sparse2);
+          libxsmm_free(fp);
+        }
+
+      /* Sparse (wide) fastest */
+      } else { /* ( dt_sparse2 < dt_dense && dt_sparse2 < dt_sparse1 ) */
+        assert(NULL != k_sparse2);
+        new_handle->N_chunksize = N_sparse2;
+        new_handle->kernel = k_sparse2;
+        if (unlimited_unique) {
+          new_handle->a_packed = a_unique_values;
+        } else {
+          free(a_unique_values);
+        }
+
+        if (NULL != k_sparse1) {
+          LIBXSMM_ASSIGN127(&fp, &k_sparse1);
+          libxsmm_free(fp);
+        }
       }
-    } else if ( NULL != k_sparse2 ) {
-      LIBXSMM_ASSIGN127( &fp, &k_sparse2 );
-      libxsmm_free( fp );
     }
 
     libxsmm_free( B );
@@ -735,34 +754,53 @@ LIBXSMM_API libxsmm_sfsspmdm* libxsmm_sfsspmdm_create(
       new_handle->kernel = k_dense;
       new_handle->a_dense = aa_dense;
       free(a_unique_values);
+
+      if (NULL != k_sparse1) {
+        LIBXSMM_ASSIGN127(&fp, &k_sparse1);
+        libxsmm_free(fp);
+      }
+
+      if (NULL != k_sparse2) {
+        LIBXSMM_ASSIGN127(&fp, &k_sparse2);
+        libxsmm_free(fp);
+      }
+
     } else {
+
       libxsmm_free( aa_dense );
-    }
 
-    /* Sparse (regular) fastest */
-    if ( dt_sparse1 < dt_dense && dt_sparse1 <= dt_sparse2 ) {
-      assert(NULL != k_sparse1);
-      new_handle->N_chunksize = N_sparse1;
-      new_handle->kernel = k_sparse1;
-      if (unlimited_unique) {
-        new_handle->a_packed = a_unique_values;
-      }
-    } else if ( NULL != k_sparse1 ) {
-      LIBXSMM_ASSIGN127( &fp, &k_sparse1 );
-      libxsmm_free( fp );
-    }
+      /* Sparse (regular) fastest */
+      if ( dt_sparse1 < dt_dense && dt_sparse1 <= dt_sparse2 ) {
+        assert(NULL != k_sparse1);
+        new_handle->N_chunksize = N_sparse1;
+        new_handle->kernel = k_sparse1;
+        if (unlimited_unique) {
+          new_handle->a_packed = a_unique_values;
+        } else {
+          free(a_unique_values);
+        }
 
-    /* Sparse (wide) fastest */
-    if ( dt_sparse2 < dt_dense && dt_sparse2 < dt_sparse1 ) {
-      assert(NULL != k_sparse2);
-      new_handle->N_chunksize = N_sparse2;
-      new_handle->kernel = k_sparse2;
-      if (unlimited_unique) {
-        new_handle->a_packed = a_unique_values;
+        if (NULL != k_sparse2) {
+          LIBXSMM_ASSIGN127(&fp, &k_sparse2);
+          libxsmm_free(fp);
+        }
+
+      /* Sparse (wide) fastest */
+      } else { /* ( dt_sparse2 < dt_dense && dt_sparse2 < dt_sparse1 ) */
+        assert(NULL != k_sparse2);
+        new_handle->N_chunksize = N_sparse2;
+        new_handle->kernel = k_sparse2;
+        if (unlimited_unique) {
+          new_handle->a_packed = a_unique_values;
+        } else {
+          free(a_unique_values);
+        }
+
+        if (NULL != k_sparse1) {
+          LIBXSMM_ASSIGN127(&fp, &k_sparse1);
+          libxsmm_free(fp);
+        }
       }
-    } else if ( NULL != k_sparse2 ) {
-      LIBXSMM_ASSIGN127( &fp, &k_sparse2 );
-      libxsmm_free( fp );
     }
 
     libxsmm_free( B );
